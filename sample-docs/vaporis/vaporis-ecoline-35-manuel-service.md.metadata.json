@@ -1,0 +1,32 @@
+{
+  "metadataAttributes": {
+    "fabricant": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "Vaporis"
+      },
+      "includeForEmbedding": true
+    },
+    "modele": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "Ecoline 35"
+      },
+      "includeForEmbedding": true
+    },
+    "type_equipement": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "chaudiere_gaz"
+      },
+      "includeForEmbedding": false
+    },
+    "type_document": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "manuel_service"
+      },
+      "includeForEmbedding": false
+    }
+  }
+}

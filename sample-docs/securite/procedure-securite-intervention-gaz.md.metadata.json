@@ -1,0 +1,32 @@
+{
+  "metadataAttributes": {
+    "fabricant": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "Interne"
+      },
+      "includeForEmbedding": true
+    },
+    "modele": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "Tous"
+      },
+      "includeForEmbedding": true
+    },
+    "type_equipement": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "tous"
+      },
+      "includeForEmbedding": false
+    },
+    "type_document": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "procedure_securite"
+      },
+      "includeForEmbedding": false
+    }
+  }
+}

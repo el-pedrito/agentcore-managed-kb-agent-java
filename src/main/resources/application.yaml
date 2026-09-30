@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: agentcore-managed-kb-agent
+  ai:
+    bedrock:
+      aws:
+        region: ${AWS_REGION:eu-west-1}
+        timeout: 60s
+      converse:
+        chat:
+          options:
+            # Profil d'inference europeen : l'inference reste dans les regions AWS en Europe.
+            model: ${MODEL_ID:eu.anthropic.claude-haiku-4-5-20251001-v1:0}
+            temperature: 0
+            max-tokens: 1000
+
+techagent:
+  knowledge-base-id: ${KNOWLEDGE_BASE_ID}
+  max-results: ${MAX_RESULTS:5}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health

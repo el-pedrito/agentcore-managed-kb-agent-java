@@ -1,0 +1,32 @@
+{
+  "metadataAttributes": {
+    "fabricant": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "Thermalys"
+      },
+      "includeForEmbedding": true
+    },
+    "modele": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "Condensa 24"
+      },
+      "includeForEmbedding": true
+    },
+    "type_equipement": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "chaudiere_gaz"
+      },
+      "includeForEmbedding": false
+    },
+    "type_document": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "notice_technique"
+      },
+      "includeForEmbedding": false
+    }
+  }
+}

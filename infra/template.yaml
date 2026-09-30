@@ -1,0 +1,259 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Assistant technicien, scenario 2 : agent Spring AI heberge sur Amazon Bedrock AgentCore Runtime,
+  qui interroge une Managed Knowledge Base Amazon Bedrock via un outil. Deploiement en deux temps :
+  1) sans ImageUri (bucket, Knowledge Base, depot ECR, role), 2) avec ImageUri (runtime de l'agent).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: techassist-agent
+    AllowedPattern: "[a-z0-9-]{3,30}"
+  ModelId:
+    Type: String
+    Default: eu.anthropic.claude-haiku-4-5-20251001-v1:0
+    AllowedPattern: "eu\\..+"
+    Description: Profil d'inference europeen (prefixe eu.) utilise par l'agent.
+  ImageUri:
+    Type: String
+    Default: ""
+    Description: Image ARM64 de l'agent dans ECR. Vide au premier deploiement.
+
+Conditions:
+  HasImage: !Not [!Equals [!Ref ImageUri, ""]]
+
+Resources:
+  # ---------- Documentation source ----------
+  DocsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-versions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: project
+          Value: !Ref ProjectName
+
+  DocsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DocsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt DocsBucket.Arn
+              - !Sub "${DocsBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  # ---------- Knowledge Base managee ----------
+  KnowledgeBaseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/*"
+      Policies:
+        - PolicyName: read-documentation
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt DocsBucket.Arn
+                Condition:
+                  StringEquals:
+                    aws:ResourceAccount: !Ref AWS::AccountId
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "${DocsBucket.Arn}/*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceAccount: !Ref AWS::AccountId
+
+  KnowledgeBase:
+    Type: AWS::Bedrock::KnowledgeBase
+    Properties:
+      Name: !Sub "${ProjectName}-kb"
+      Description: Documentation technique fournisseurs (notices, codes defauts, procedures)
+      RoleArn: !GetAtt KnowledgeBaseRole.Arn
+      KnowledgeBaseConfiguration:
+        Type: MANAGED
+        ManagedKnowledgeBaseConfiguration:
+          EmbeddingModelType: MANAGED
+      Tags:
+        project: !Ref ProjectName
+
+  DocsDataSource:
+    Type: AWS::Bedrock::DataSource
+    Properties:
+      KnowledgeBaseId: !GetAtt KnowledgeBase.KnowledgeBaseId
+      Name: !Sub "${ProjectName}-s3-docs"
+      DataDeletionPolicy: DELETE
+      DataSourceConfiguration:
+        Type: S3
+        S3Configuration:
+          BucketArn: !GetAtt DocsBucket.Arn
+          InclusionPrefixes:
+            - docs/
+
+  # ---------- Image de l'agent ----------
+  AgentRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "${ProjectName}"
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: >
+          {"rules":[{"rulePriority":1,"description":"Garder les 10 dernieres images",
+          "selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},
+          "action":{"type":"expire"}}]}
+      EmptyOnDelete: true
+      Tags:
+        - Key: project
+          Value: !Ref ProjectName
+
+  # ---------- Role d'execution de l'agent (moindre privilege) ----------
+  AgentExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:*"
+      Policies:
+        - PolicyName: agent-runtime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: PullAgentImage
+                Effect: Allow
+                Action:
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: !GetAtt AgentRepository.Arn
+              - Sid: EcrToken
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*"
+              - Sid: DescribeLogGroups
+                Effect: Allow
+                Action: logs:DescribeLogGroups
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*"
+              - Sid: Traces
+                Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                  - xray:GetSamplingRules
+                  - xray:GetSamplingTargets
+                Resource: "*"
+              - Sid: Metrics
+                Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: bedrock-agentcore
+              - Sid: RetrieveFromKnowledgeBase
+                Effect: Allow
+                Action: bedrock:Retrieve
+                Resource: !GetAtt KnowledgeBase.KnowledgeBaseArn
+              - Sid: InvokeEuropeanInferenceProfile
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${ModelId}"
+                  - !Sub
+                    - "arn:${AWS::Partition}:bedrock:eu-*::foundation-model/${BaseModel}"
+                    - BaseModel: !Select [1, !Split ["eu.", !Ref ModelId]]
+
+  # ---------- Runtime de l'agent ----------
+  AgentRuntime:
+    Type: AWS::BedrockAgentCore::Runtime
+    Condition: HasImage
+    Properties:
+      AgentRuntimeName: techassist_agent
+      Description: Agent technicien (Spring AI) avec recherche dans la Managed Knowledge Base
+      RoleArn: !GetAtt AgentExecutionRole.Arn
+      AgentRuntimeArtifact:
+        ContainerConfiguration:
+          ContainerUri: !Ref ImageUri
+      NetworkConfiguration:
+        NetworkMode: PUBLIC
+      ProtocolConfiguration: HTTP
+      EnvironmentVariables:
+        AWS_REGION: !Ref AWS::Region
+        KNOWLEDGE_BASE_ID: !GetAtt KnowledgeBase.KnowledgeBaseId
+        MODEL_ID: !Ref ModelId
+      Tags:
+        project: !Ref ProjectName
+
+Outputs:
+  DocsBucketName:
+    Value: !Ref DocsBucket
+  KnowledgeBaseId:
+    Value: !GetAtt KnowledgeBase.KnowledgeBaseId
+  DataSourceId:
+    Value: !GetAtt DocsDataSource.DataSourceId
+  RepositoryUri:
+    Value: !GetAtt AgentRepository.RepositoryUri
+  ModelId:
+    Value: !Ref ModelId
+  AgentRuntimeArn:
+    Condition: HasImage
+    Value: !GetAtt AgentRuntime.AgentRuntimeArn
