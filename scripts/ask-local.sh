@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
 # Appelle l'agent lance en local (mvn spring-boot:run), meme contrat qu'AgentCore Runtime.
-# Usage : ./scripts/ask-local.sh "question" [INT-2026-0412] [session-id]
+# La question est lue sur l'entree standard et le JSON passe a curl par stdin : rien de la
+# question n'apparait dans `ps` ni dans l'historique du shell.
+# Usage : ./scripts/ask-local.sh [INT-2026-0412] [session-id]   puis taper la question
+#         ./scripts/ask-local.sh INT-2026-0412 <<< "J'ai un code F28, que dois-je faire ?"
 set -euo pipefail
-PROMPT="${1:?question requise}"
-INTERVENTION="${2:-}"
-SESSION="${3:-local-session}"
-PAYLOAD=$(jq -n --arg p "$PROMPT" --arg i "$INTERVENTION" \
-  'if $i == "" then {prompt: $p} else {prompt: $p, interventionId: $i} end')
-curl -s -X POST http://localhost:8080/invocations \
-  -H "Content-Type: application/json" \
-  -H "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id: $SESSION" \
-  -d "$PAYLOAD" | jq .
+INTERVENTION="${1:-}"
+# Une session par defaut unique par appel : passer le meme id pour enchainer les questions.
+SESSION="${2:-local-$(uuidgen)}"
+[ -t 0 ] && printf 'Question : ' >&2
+IFS= read -r PROMPT || true
+[ -n "$PROMPT" ] || { echo "Question vide." >&2; exit 1; }
+
+printf '%s' "$PROMPT" | jq -Rs --arg i "$INTERVENTION" \
+  'if $i == "" then {prompt: .} else {prompt: ., interventionId: $i} end' \
+  | curl -s --max-time 120 -X POST http://localhost:8080/invocations \
+      -H "Content-Type: application/json" \
+      -H "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id: $SESSION" \
+      --data-binary @- | jq .
+echo "session : $SESSION"

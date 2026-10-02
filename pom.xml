@@ -17,8 +17,11 @@
     <name>Agent technicien : Spring AI sur AgentCore Runtime + Managed Knowledge Base</name>
 
     <properties>
-        <!-- Compile en 21 (LTS) : le binaire tourne aussi sur Java 25. -->
-        <java.version>21</java.version>
+        <!-- Meme socle que le projet client : Java 25, Spring Boot 4.1, Spring AI 2.0.1. -->
+        <java.version>25</java.version>
+        <jib.version>3.5.2</jib.version>
+        <!-- Image cible poussee par Jib (surcharge par -Djib.to.image=... dans deploy.sh). -->
+        <jib.to.image>techassist-agent:local</jib.to.image>
         <aws.sdk.version>2.55.8</aws.sdk.version>
         <spring-ai.version>2.0.1</spring-ai.version>
         <spring-ai-agentcore.version>2.2.0</spring-ai-agentcore.version>
@@ -70,10 +73,20 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!-- Abstraction VectorStore Spring AI, implementee pour la Knowledge Base managee -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-vector-store</artifactId>
+        </dependency>
         <!-- Outil de recherche : Retrieve sur la Knowledge Base managee -->
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>bedrockagentruntime</artifactId>
+        </dependency>
+        <!-- ApplyGuardrail (controle d'ancrage de la reponse finale), non expose par Spring AI 2.0.1 -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>bedrockruntime</artifactId>
         </dependency>
 
         <dependency>
@@ -89,6 +102,36 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <!-- Image ARM64 (exigee par AgentCore Runtime) construite et poussee sans daemon Docker. -->
+            <plugin>
+                <groupId>com.google.cloud.tools</groupId>
+                <artifactId>jib-maven-plugin</artifactId>
+                <version>${jib.version}</version>
+                <configuration>
+                    <from>
+                        <image>public.ecr.aws/amazoncorretto/amazoncorretto:25-al2023-headless</image>
+                        <platforms>
+                            <platform>
+                                <architecture>arm64</architecture>
+                                <os>linux</os>
+                            </platform>
+                        </platforms>
+                    </from>
+                    <to>
+                        <image>${jib.to.image}</image>
+                    </to>
+                    <container>
+                        <ports>
+                            <port>8080</port>
+                        </ports>
+                        <jvmFlags>
+                            <jvmFlag>-XX:MaxRAMPercentage=75</jvmFlag>
+                        </jvmFlags>
+                        <user>1000:1000</user>
+                        <creationTime>USE_CURRENT_TIMESTAMP</creationTime>
+                    </container>
+                </configuration>
             </plugin>
         </plugins>
     </build>

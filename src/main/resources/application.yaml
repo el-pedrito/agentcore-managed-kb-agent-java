@@ -1,3 +1,8 @@
+# Endpoint sans authentification en local : ecoute sur 127.0.0.1 par defaut. Sur AgentCore
+# Runtime, SERVER_ADDRESS=0.0.0.0 (le Runtime authentifie les appels en SigV4).
+server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
+
 spring:
   application:
     name: agentcore-managed-kb-agent
@@ -17,6 +22,11 @@ spring:
 techagent:
   knowledge-base-id: ${KNOWLEDGE_BASE_ID}
   max-results: ${MAX_RESULTS:5}
+  # Garde-fou d'ancrage de la demo 1. Actif par defaut : sans GUARDRAIL_ID/VERSION, l'agent
+  # refuse de demarrer (GROUNDING_CHECK=false pour le desactiver explicitement).
+  grounding-check: ${GROUNDING_CHECK:true}
+  guardrail-id: ${GUARDRAIL_ID:}
+  guardrail-version: ${GUARDRAIL_VERSION:}
 
 management:
   endpoints:

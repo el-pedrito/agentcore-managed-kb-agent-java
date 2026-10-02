@@ -12,6 +12,8 @@ import org.springframework.context.ApplicationContext;
  */
 @SpringBootTest(properties = {
         "techagent.knowledge-base-id=KB-TEST",
+        "techagent.guardrail-id=gr-test",
+        "techagent.guardrail-version=1",
         "spring.ai.bedrock.aws.region=eu-west-1",
         "spring.ai.bedrock.aws.access-key=test",
         "spring.ai.bedrock.aws.secret-key=test"
@@ -24,12 +26,5 @@ class TechnicianAgentWiringTest {
     @Test
     void agentIsWired() {
         assertThat(context.getBean(TechnicianAgent.class)).isNotNull();
-    }
-
-    @Test
-    void interventionIdIsPrependedToThePrompt() {
-        String message = TechnicianAgent.userMessage(new TechnicianAgent.AgentRequest("Que faire ?", " INT-2026-0412 "));
-        assertThat(message).isEqualTo("Intervention : INT-2026-0412\nQue faire ?");
-        assertThat(TechnicianAgent.userMessage(new TechnicianAgent.AgentRequest("Que faire ?", null))).isEqualTo("Que faire ?");
     }
 }

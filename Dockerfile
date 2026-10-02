@@ -1,6 +1,6 @@
 # AgentCore Runtime exige une image ARM64.
-# Construire le jar avant : mvn -B package -DskipTests
-FROM --platform=linux/arm64 amazoncorretto:21-alpine
+# Alternative a Jib (voir pom.xml). Construire le jar avant : mvn -B package -DskipTests
+FROM --platform=linux/arm64 amazoncorretto:25-alpine
 
 RUN addgroup -S app && adduser -S app -G app
 WORKDIR /app

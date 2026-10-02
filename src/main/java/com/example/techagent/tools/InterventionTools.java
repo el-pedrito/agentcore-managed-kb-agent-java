@@ -2,6 +2,7 @@ package com.example.techagent.tools;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -19,7 +20,8 @@ public class InterventionTools {
     public record Intervention(String id, String site, String fabricant, String modele, int anneeInstallation,
             String symptomeSignale, List<String> historiquePannes, String dernierEntretien) { }
 
-    public record StockPiece(String reference, String designation, int quantiteDepot, String depot) { }
+    /** quantiteDepot et depot sont null quand la reference n'est pas suivie : inconnu n'est pas zero. */
+    public record StockPiece(String reference, String designation, Integer quantiteDepot, String depot) { }
 
     private static final Map<String, Intervention> INTERVENTIONS = Map.of(
             "INT-2026-0412", new Intervention("INT-2026-0412", "Résidence Les Tilleuls, Lyon 3e, logement 12",
@@ -47,12 +49,29 @@ public class InterventionTools {
     public Intervention getIntervention(
             @ToolParam(description = "Numero d'intervention, par exemple INT-2026-0412") String interventionId,
             ToolContext toolContext) {
-        ToolTrace.from(toolContext).call("getIntervention(" + interventionId + ")");
-        Intervention intervention = INTERVENTIONS.get(interventionId == null ? "" : interventionId.trim().toUpperCase());
-        if (intervention == null) {
-            throw new IllegalArgumentException("Intervention inconnue : " + interventionId);
+        ToolTrace trace = ToolTrace.from(toolContext);
+        trace.requireCall("getIntervention(" + interventionId + ")");
+        // Seule l'intervention de la requete, resolue par l'application avant la boucle, est
+        // consultable : le modele de langage ne choisit pas l'ordre de travail qu'il lit. En
+        // production, c'est aussi la ou s'applique le controle d'acces du technicien.
+        String trusted = trace.trustedInterventionId();
+        if (trusted == null || !trusted.equals(normalize(interventionId))) {
+            throw new IllegalArgumentException("Seule l'intervention en cours peut etre consultee");
         }
+        Intervention intervention = INTERVENTIONS.get(trusted);
+        // Le contenu entre dans la source du controle d'ancrage seulement maintenant, quand le
+        // modele l'a effectivement recu : il ne peut pas etre "fonde" sur ce qu'il n'a pas lu.
+        trace.groundingSource("Intervention " + intervention);
         return intervention;
+    }
+
+    /** Resolution par l'application (pas par le modele de langage) du numero recu dans la requete. */
+    public Optional<Intervention> find(String interventionId) {
+        return Optional.ofNullable(INTERVENTIONS.get(normalize(interventionId)));
+    }
+
+    private static String normalize(String id) {
+        return id == null ? "" : id.strip().toUpperCase();
     }
 
     @Tool(description = """
@@ -61,8 +80,16 @@ public class InterventionTools {
     public StockPiece checkSparePartStock(
             @ToolParam(description = "Reference fabricant de la piece, par exemple TH-PR-4018") String reference,
             ToolContext toolContext) {
-        ToolTrace.from(toolContext).call("checkSparePartStock(" + reference + ")");
-        StockPiece piece = STOCK.get(reference == null ? "" : reference.trim().toUpperCase());
-        return piece != null ? piece : new StockPiece(reference, "Référence non suivie en stock", 0, "aucun");
+        ToolTrace.from(toolContext).requireCall("checkSparePartStock(" + reference + ")");
+        StockPiece piece = STOCK.get(normalize(reference));
+        if (piece == null) {
+            // Ne jamais renvoyer l'argument du modele comme donnee de reference : sinon un texte
+            // invente par le modele deviendrait une source "fondee" pour le controle d'ancrage.
+            String status = "Référence non suivie en stock : disponibilité inconnue (ce n'est pas une rupture).";
+            ToolTrace.from(toolContext).groundingSource("Stock : " + status);
+            return new StockPiece(null, status, null, null);
+        }
+        ToolTrace.from(toolContext).groundingSource("Stock " + piece);
+        return piece;
     }
 }
