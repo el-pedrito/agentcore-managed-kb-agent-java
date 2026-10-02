@@ -19,8 +19,8 @@ import software.amazon.awssdk.services.bedrockruntime.BedrockRuntimeClient;
 public class AgentConfig {
 
     /**
-     * Client de la Knowledge Base. Credentials : role d'execution AgentCore Runtime en
-     * production, profil local en developpement. Aucune cle statique.
+     * Knowledge Base client. Credentials: AgentCore Runtime execution role in production, local
+     * profile in development. No static key.
      */
     @Bean(destroyMethod = "close")
     BedrockAgentRuntimeClient bedrockAgentRuntimeClient(@Value("${spring.ai.bedrock.aws.region}") String region) {
@@ -33,8 +33,8 @@ public class AgentConfig {
     }
 
     /**
-     * Client bedrock-runtime unique : ApplyGuardrail pour {@link GroundingGuard}, et repris par
-     * l'auto-configuration Spring AI pour Converse. Timeout dimensionne pour une generation.
+     * Single bedrock-runtime client: ApplyGuardrail for {@link GroundingGuard}, and picked up by the
+     * Spring AI auto-configuration for Converse. Timeout sized for a generation.
      */
     @Bean(destroyMethod = "close")
     BedrockRuntimeClient bedrockRuntimeClient(@Value("${spring.ai.bedrock.aws.region}") String region) {
@@ -46,21 +46,18 @@ public class AgentConfig {
                 .build();
     }
 
+    /** Mandatory guardrail: without GUARDRAIL_ID and GUARDRAIL_VERSION, the agent does not start. */
     @Bean
     GroundingGuard groundingGuard(BedrockRuntimeClient bedrockRuntimeClient,
-            @Value("${techagent.grounding-check:true}") boolean groundingCheck,
-            @Value("${techagent.guardrail-id:}") String guardrailId,
-            @Value("${techagent.guardrail-version:}") String guardrailVersion) {
-        // Fail fast : un garde-fou annonce mais mal configure ne doit pas laisser passer de
-        // reponses non controlees.
-        if (groundingCheck && (guardrailId.isBlank() || guardrailVersion.isBlank())) {
-            throw new IllegalStateException("Controle d'ancrage actif : GUARDRAIL_ID et GUARDRAIL_VERSION sont "
-                    + "obligatoires (ou GROUNDING_CHECK=false pour le desactiver explicitement).");
+            @Value("${techagent.guardrail-id}") String guardrailId,
+            @Value("${techagent.guardrail-version}") String guardrailVersion) {
+        if (guardrailId.isBlank() || guardrailVersion.isBlank()) {
+            throw new IllegalStateException("GUARDRAIL_ID and GUARDRAIL_VERSION are required");
         }
         return new GroundingGuard(bedrockRuntimeClient, guardrailId, guardrailVersion);
     }
 
-    /** Recherche Spring AI au-dessus de la Knowledge Base managee (meme classe que la demo 1). */
+    /** Spring AI retrieval on top of the managed Knowledge Base (same class as demo 1). */
     @Bean
     VectorStore managedKnowledgeBaseVectorStore(BedrockAgentRuntimeClient client,
             @Value("${techagent.knowledge-base-id}") String knowledgeBaseId) {
@@ -68,10 +65,10 @@ public class AgentConfig {
     }
 
     /**
-     * Memoire de conversation courte (les 20 derniers messages), cle = identifiant de session
-     * AgentCore. Chaque session AgentCore Runtime s'execute dans sa propre microVM : la memoire
-     * en processus suffit pour enchainer les questions d'une meme intervention. Pour une memoire
-     * durable (historique d'un site, preferences), remplacer par AgentCore Memory.
+     * Short conversation memory (last 20 messages), keyed by session and intervention. Each
+     * AgentCore Runtime session runs in its own microVM: in-process memory is enough to chain the
+     * questions of one intervention. For durable memory (site history, preferences), replace it
+     * with AgentCore Memory.
      */
     @Bean
     ChatMemory chatMemory() {

@@ -8,7 +8,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 
 /**
- * Verifie que l'application demarre et que l'agent est enregistre, sans appeler AWS.
+ * Checks that the application starts and that the agent is registered, without calling AWS.
  */
 @SpringBootTest(properties = {
         "techagent.knowledge-base-id=KB-TEST",

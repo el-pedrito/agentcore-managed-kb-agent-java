@@ -9,13 +9,13 @@ locals {
   base_model_id = trimprefix(var.model_id, "eu.")
 }
 
-# ---------- Depot de l'image de l'agent ----------
+# ---------- Agent image repository ----------
 
 resource "aws_ecr_repository" "agent" {
-  #checkov:skip=CKV_AWS_136:demo, chiffrement AES256 gere par ECR (KMS CMK en production)
+  #checkov:skip=CKV_AWS_136:demo, AES256 encryption managed by ECR (KMS CMK in production)
   name                 = var.project_name
   image_tag_mutability = "IMMUTABLE"
-  # Demo : les images sont supprimees par terraform destroy.
+  # Demo: images are deleted by terraform destroy.
   force_delete = true
 
   image_scanning_configuration {
@@ -32,14 +32,14 @@ resource "aws_ecr_lifecycle_policy" "agent" {
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Garder les 10 dernieres images"
+      description  = "Keep the last 10 images"
       selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 10 }
       action       = { type = "expire" }
     }]
   })
 }
 
-# ---------- Role d'execution de l'agent (moindre privilege) ----------
+# ---------- Agent execution role (least privilege) ----------
 
 data "aws_iam_policy_document" "agent_trust" {
   statement {
@@ -53,8 +53,8 @@ data "aws_iam_policy_document" "agent_trust" {
       variable = "aws:SourceAccount"
       values   = [local.account_id]
     }
-    # Forme prescrite par la documentation AgentCore (runtime-permissions) : le compte et la
-    # region sont fixes, l'ARN du runtime n'existe pas encore a la creation du role.
+    # Form prescribed by the AgentCore documentation (runtime-permissions): account and Region
+    # are fixed, the runtime ARN does not exist yet when the role is created.
     condition {
       test     = "ArnLike"
       variable = "aws:SourceArn"
@@ -106,18 +106,14 @@ data "aws_iam_policy_document" "agent_permissions" {
   }
   statement {
     sid = "InvokeEuropeanInferenceProfile"
-    # Converse = bedrock:InvokeModel (l'agent ne fait pas de streaming).
+    # Converse = bedrock:InvokeModel (the agent does not stream).
     actions = ["bedrock:InvokeModel"]
     resources = [
       "arn:${local.partition}:bedrock:${var.region}:${local.account_id}:inference-profile/${var.model_id}",
-      # Un profil eu. route uniquement vers des regions europeennes.
+      # An eu. profile only routes to European Regions.
       "arn:${local.partition}:bedrock:eu-*::foundation-model/${local.base_model_id}",
     ]
   }
-}
-
-data "aws_iam_policy_document" "agent_guardrail" {
-  count = var.guardrail_id == "" ? 0 : 1
   statement {
     sid       = "ApplyGroundingGuardrail"
     actions   = ["bedrock:ApplyGuardrail"]
@@ -136,12 +132,5 @@ resource "aws_iam_role_policy" "agent" {
   policy = data.aws_iam_policy_document.agent_permissions.json
 }
 
-resource "aws_iam_role_policy" "agent_guardrail" {
-  count  = var.guardrail_id == "" ? 0 : 1
-  name   = "apply-grounding-guardrail"
-  role   = aws_iam_role.agent.id
-  policy = data.aws_iam_policy_document.agent_guardrail[0].json
-}
-
-# Le runtime AgentCore est dans une configuration separee (infra/runtime), qui recoit le role
-# et les parametres via les outputs ci-dessous : un apply du socle ne peut pas le detruire.
+# The AgentCore runtime lives in a separate configuration (infra/runtime), which receives the role
+# and the parameters through the outputs below: an apply of the base cannot destroy it.

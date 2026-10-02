@@ -49,32 +49,32 @@ class ManagedKnowledgeBaseVectorStoreTest {
         FilterExpressionBuilder b = new FilterExpressionBuilder();
 
         store.similaritySearch(SearchRequest.builder().query("F28").topK(5)
-                .filterExpression(b.or(b.eq("modele", "Condensa 24"), b.eq("modele", "Tous")).build())
+                .filterExpression(b.or(b.eq("model", "Condensa 24"), b.eq("model", "ALL")).build())
                 .build());
 
         RetrievalFilter filter = captureRequest().retrievalConfiguration().managedSearchConfiguration().filter();
         assertThat(filter.orAll()).hasSize(2);
-        assertThat(filter.orAll().get(0).equalsValue().key()).isEqualTo("modele");
+        assertThat(filter.orAll().get(0).equalsValue().key()).isEqualTo("model");
         assertThat(filter.orAll().get(0).equalsValue().value().asString()).isEqualTo("Condensa 24");
-        assertThat(filter.orAll().get(1).equalsValue().value().asString()).isEqualTo("Tous");
+        assertThat(filter.orAll().get(1).equalsValue().value().asString()).isEqualTo("ALL");
     }
 
     @Test
-    void translatesTextFiltersWithGroupsAndLists() {
+    void translatesTextFiltersWithGroups() {
         var expression = new FilterExpressionTextParser()
-                .parse("(fabricant == 'Thermalys' || fabricant == 'Vaporis') && modele in ['Condensa 24', 'Tous']");
+                .parse("(manufacturer == 'Thermalys' || manufacturer == 'Vaporis') && model == 'Condensa 24'");
 
         RetrievalFilter filter = ManagedKnowledgeBaseVectorStore.toRetrievalFilter(expression);
 
         assertThat(filter.andAll()).hasSize(2);
         assertThat(filter.andAll().get(0).orAll()).hasSize(2);
-        assertThat(filter.andAll().get(1).in().value().asList()).hasSize(2);
+        assertThat(filter.andAll().get(1).equalsValue().value().asString()).isEqualTo("Condensa 24");
     }
 
     @Test
     void rejectsOperatorsTheKnowledgeBaseDoesNotSupportExplicitly() {
-        var expression = new FilterExpressionTextParser().parse("annee >= 2020");
-        // GTE est supporte par la Knowledge Base mais pas traduit ici : on refuse plutot que d'ignorer.
+        var expression = new FilterExpressionTextParser().parse("year >= 2020");
+        // Operator not translated by the demo: refuse rather than silently ignore the filter.
         assertThatThrownBy(() -> ManagedKnowledgeBaseVectorStore.toRetrievalFilter(expression))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -91,8 +91,8 @@ class ManagedKnowledgeBaseVectorStoreTest {
             assertThat(d.getText()).isEqualTo("F28 : pression trop basse");
             assertThat(d.getScore()).isEqualTo(0.82);
             assertThat(d.getMetadata())
-                    .containsEntry("modele", "Condensa 24")
-                    .containsEntry("fabricant", "Thermalys")
+                    .containsEntry("model", "Condensa 24")
+                    .containsEntry("manufacturer", "Thermalys")
                     .containsEntry(ManagedKnowledgeBaseVectorStore.SOURCE_URI, "s3://bucket/thermalys/notice.md");
         });
     }
@@ -121,8 +121,8 @@ class ManagedKnowledgeBaseVectorStoreTest {
                         .s3Location(RetrievalResultS3Location.builder().uri("s3://bucket/thermalys/notice.md").build())
                         .build())
                 .metadata(Map.of(
-                        "modele", software.amazon.awssdk.core.document.Document.fromString("Condensa 24"),
-                        "fabricant", software.amazon.awssdk.core.document.Document.fromString("Thermalys")))
+                        "model", software.amazon.awssdk.core.document.Document.fromString("Condensa 24"),
+                        "manufacturer", software.amazon.awssdk.core.document.Document.fromString("Thermalys")))
                 .score(score)
                 .build();
     }

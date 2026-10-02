@@ -8,9 +8,9 @@ terraform {
     }
   }
 
-  # Etat local pour la demo. En equipe, utiliser un backend S3 (verrouillage natif use_lockfile) :
+  # Local state for the demo. In a team, use an S3 backend (native locking with use_lockfile):
   # backend "s3" {
-  #   bucket       = "<bucket-etat-terraform>"
+  #   bucket       = "<terraform-state-bucket>"
   #   key          = "techassist/demo2-base.tfstate"
   #   region       = "eu-west-1"
   #   use_lockfile = true
@@ -20,7 +20,7 @@ terraform {
 
 provider "aws" {
   region = var.region
-  # Garde-fou : Terraform refuse de toucher un autre compte que celui attendu.
+  # Safety net: Terraform refuses to touch any account other than the expected one.
   allowed_account_ids = [var.account_id]
 
   default_tags {

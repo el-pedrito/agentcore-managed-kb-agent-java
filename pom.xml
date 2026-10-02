@@ -14,13 +14,13 @@
     <groupId>com.example.techagent</groupId>
     <artifactId>agentcore-managed-kb-agent</artifactId>
     <version>1.0.0</version>
-    <name>Agent technicien : Spring AI sur AgentCore Runtime + Managed Knowledge Base</name>
+    <name>Technician agent: Spring AI on AgentCore Runtime + Managed Knowledge Base</name>
 
     <properties>
-        <!-- Meme socle que le projet client : Java 25, Spring Boot 4.1, Spring AI 2.0.1. -->
+        <!-- Same stack as the customer project: Java 25, Spring Boot 4.1, Spring AI 2.0.1. -->
         <java.version>25</java.version>
         <jib.version>3.5.2</jib.version>
-        <!-- Image cible poussee par Jib (surcharge par -Djib.to.image=... dans deploy.sh). -->
+        <!-- Target image pushed by Jib (overridden with -Djib.to.image=... in deploy.sh). -->
         <jib.to.image>techassist-agent:local</jib.to.image>
         <aws.sdk.version>2.55.8</aws.sdk.version>
         <spring-ai.version>2.0.1</spring-ai.version>
@@ -29,7 +29,7 @@
 
     <dependencyManagement>
         <dependencies>
-            <!-- En premier : impose une version du SDK qui connait managedSearchConfiguration. -->
+            <!-- First: pins an SDK version that knows managedSearchConfiguration. -->
             <dependency>
                 <groupId>software.amazon.awssdk</groupId>
                 <artifactId>bom</artifactId>
@@ -55,12 +55,12 @@
     </dependencyManagement>
 
     <dependencies>
-        <!-- Boucle agent : ChatClient + outils, modele via Bedrock Converse -->
+        <!-- Agent loop: ChatClient + tools, model through Bedrock Converse -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-model-bedrock-converse</artifactId>
         </dependency>
-        <!-- Contrat AgentCore Runtime (/invocations, /ping) -->
+        <!-- AgentCore Runtime contract (/invocations, /ping) -->
         <dependency>
             <groupId>org.springaicommunity</groupId>
             <artifactId>spring-ai-agentcore-runtime-starter</artifactId>
@@ -73,17 +73,17 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
-        <!-- Abstraction VectorStore Spring AI, implementee pour la Knowledge Base managee -->
+        <!-- Spring AI VectorStore abstraction, implemented for the managed Knowledge Base -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-vector-store</artifactId>
         </dependency>
-        <!-- Outil de recherche : Retrieve sur la Knowledge Base managee -->
+        <!-- Search tool: Retrieve on the managed Knowledge Base -->
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>bedrockagentruntime</artifactId>
         </dependency>
-        <!-- ApplyGuardrail (controle d'ancrage de la reponse finale), non expose par Spring AI 2.0.1 -->
+        <!-- ApplyGuardrail (grounding check of the final answer), not exposed by Spring AI 2.0.1 -->
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>bedrockruntime</artifactId>
@@ -103,7 +103,7 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
-            <!-- Image ARM64 (exigee par AgentCore Runtime) construite et poussee sans daemon Docker. -->
+            <!-- ARM64 image (required by AgentCore Runtime) built and pushed without a Docker daemon. -->
             <plugin>
                 <groupId>com.google.cloud.tools</groupId>
                 <artifactId>jib-maven-plugin</artifactId>

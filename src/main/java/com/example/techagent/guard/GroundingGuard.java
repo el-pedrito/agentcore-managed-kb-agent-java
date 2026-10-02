@@ -15,21 +15,21 @@ import software.amazon.awssdk.services.bedrockruntime.model.GuardrailContextualG
 import software.amazon.awssdk.services.bedrockruntime.model.GuardrailTextBlock;
 
 /**
- * Controle d'ancrage contextuel, applique APRES la generation avec l'API {@code ApplyGuardrail}.
+ * Contextual grounding check, applied AFTER generation with the {@code ApplyGuardrail} API.
  *
- * <p>Pourquoi le SDK ici : Spring AI 2.0.1 ne transmet ni {@code guardrailConfig} ni les blocs
- * {@code guardContent} a Converse. {@code ApplyGuardrail} est l'API recommandee par AWS pour un
- * garde-fou independant du modele : on lui donne la documentation recuperee
- * ({@code grounding_source}), la question ({@code query}) et la reponse ({@code guard_content}).
- * Il renvoie un score d'ancrage et un score de pertinence, compares aux seuils du garde-fou.
+ * <p>Why the SDK here: Spring AI 2.0.1 passes neither {@code guardrailConfig} nor
+ * {@code guardContent} blocks to Converse. {@code ApplyGuardrail} is the API AWS recommends for a
+ * model-independent guardrail: it receives the retrieved documentation ({@code grounding_source}),
+ * the question ({@code query}) and the answer ({@code guard_content}). It returns a grounding score
+ * and a relevance score, compared with the guardrail thresholds.
  *
- * <p>Fail-closed : une reponse n'est acceptee que si le service a explicitement renvoye
- * {@code NONE} ET les deux scores (ancrage, pertinence). Toute evaluation absente ou incomplete
- * (garde-fou mal configure, texte hors limites) bloque la reponse.
+ * <p>Fail-closed: an answer is accepted only if the service explicitly returned {@code NONE} AND
+ * both scores (grounding, relevance). Any missing or incomplete evaluation (misconfigured
+ * guardrail, text out of limits) blocks the answer.
  */
 public class GroundingGuard {
 
-    /** Limites du controle d'ancrage contextuel (documentation Amazon Bedrock Guardrails). */
+    /** Limits of the contextual grounding check (Amazon Bedrock Guardrails documentation). */
     public static final int MAX_GROUNDING_SOURCE_CHARS = 100_000;
     public static final int MAX_QUERY_CHARS = 1_000;
     public static final int MAX_RESPONSE_CHARS = 5_000;
@@ -103,17 +103,14 @@ public class GroundingGuard {
     }
 
     /**
-     * @param blocked     vrai si la reponse doit etre refusee (sous un seuil, ou non evaluable)
-     * @param grounding   score d'ancrage dans la documentation (0 a 1), null si non evalue
-     * @param relevance   score de pertinence par rapport a la question (0 a 1), null si non evalue
-     * @param textUnits   unites de texte facturees pour ce controle
+     * @param blocked     true if the answer must be refused (below a threshold, or not evaluable)
+     * @param grounding   how well the answer is grounded in the documentation (0 to 1), null if not evaluated
+     * @param relevance   how relevant the answer is to the question (0 to 1), null if not evaluated
+     * @param textUnits   text units billed for this check
      */
     public record Verdict(boolean blocked, Double grounding, Double relevance, int textUnits) {
 
-        /** Controle desactive explicitement par configuration (techagent.grounding-check=false). */
-        public static final Verdict DISABLED = new Verdict(false, null, null, 0);
-
-        /** Controle impossible : la reponse est bloquee. */
+        /** Check not possible: the answer is blocked. */
         public static final Verdict NOT_EVALUATED = new Verdict(true, null, null, 0);
     }
 }

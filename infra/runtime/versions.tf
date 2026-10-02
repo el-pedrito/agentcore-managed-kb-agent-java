@@ -8,9 +8,9 @@ terraform {
     }
   }
 
-  # Etat local pour la demo, distinct de celui du socle (infra/base). En equipe, backend S3 :
+  # Local state for the demo, separate from the base one (infra/base). In a team, S3 backend:
   # backend "s3" {
-  #   bucket       = "<bucket-etat-terraform>"
+  #   bucket       = "<terraform-state-bucket>"
   #   key          = "techassist/demo2-runtime.tfstate"
   #   region       = "eu-west-1"
   #   use_lockfile = true
@@ -20,7 +20,7 @@ terraform {
 
 provider "aws" {
   region = var.region
-  # Garde-fou : Terraform refuse de toucher un autre compte que celui attendu.
+  # Safety net: Terraform refuses to touch any account other than the expected one.
   allowed_account_ids = [var.account_id]
 
   default_tags {

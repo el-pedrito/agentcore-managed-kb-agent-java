@@ -27,41 +27,33 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
-import software.amazon.awssdk.core.exception.SdkException;
 
 /**
- * Agent technicien. Le modele choisit lui-meme quels outils appeler et dans quel ordre
- * (contexte d'intervention, recherche documentaire, stock), puis repond. La reponse finale passe
- * ensuite le controle d'ancrage, avec comme source de verite tout ce que les outils ont renvoye.
+ * Technician agent. The model chooses which tools to call (intervention, documentation, stock),
+ * then answers. The answer is only shown if it is grounded in what the tools returned.
  *
- * <p>Regles de securite, appliquees en code et pas seulement dans le prompt :
- * <ul>
- *   <li>Fail-closed : une reponse sans contenu d'outil, ou non evaluable par le garde-fou, est
- *       bloquee. Une recherche documentaire vide donne une reponse NOT_FOUND deterministe.</li>
- *   <li>Memoire geree explicitement : seuls la question et la reponse effectivement montree au
- *       technicien sont enregistres. Une reponse rejetee et la consigne de relance n'entrent
- *       jamais dans l'historique de la session.</li>
- *   <li>Entrees validees avant tout appel au modele.</li>
- * </ul>
+ * <p>Three rules, enforced in code:
+ * <ol>
+ *   <li>The intervention is loaded by the application, not chosen by the model.</li>
+ *   <li>No documentation excerpt, or an ungrounded answer: the answer is blocked.</li>
+ *   <li>Memory only keeps the question and the answer shown, per session AND per intervention.</li>
+ * </ol>
  *
- * <p>{@link AgentCoreInvocation} expose la methode sur POST /invocations et fournit /ping :
- * c'est le contrat attendu par AgentCore Runtime. Le meme jar tourne en local.
+ * <p>{@link AgentCoreInvocation} exposes the method on POST /invocations (and /ping): this is the
+ * contract expected by AgentCore Runtime. The same jar runs locally.
  */
 @Service
 public class TechnicianAgent {
 
-    static final String NOT_FOUND_MESSAGE = "Je ne trouve pas cette information dans la documentation disponible.";
+    // User-facing messages stay in French: the technicians are French speakers.
     static final String BLOCKED_MESSAGE = "Je ne peux pas donner de réponse fiable à partir de la documentation disponible. "
             + "Précisez le modèle de l'équipement ou le numéro d'intervention.";
     static final String INVALID_MESSAGE = "Requête invalide : question de 1 à " + GroundingGuard.MAX_QUERY_CHARS
-            + " caractères, numéro d'intervention au format INT-AAAA-NNNN.";
+            + " caractères, numéro d'intervention connu au format INT-AAAA-NNNN.";
+    static final String ERROR_MESSAGE = "Le service est momentanément indisponible. Réessayez dans quelques instants.";
 
-    static final String UNKNOWN_INTERVENTION_MESSAGE = "Numéro d'intervention inconnu.";
-    static final String UNAVAILABLE_MESSAGE = "Le service est momentanément indisponible. Réessayez dans quelques instants.";
-
-    static final String RETRY_INSTRUCTION = "Ta réponse précédente n'est pas fondée sur la documentation. "
-            + "Appelle searchTechnicalDocumentation pour la question posée, puis réponds uniquement à partir "
-            + "des extraits obtenus. Si la documentation ne contient pas la réponse, dis-le.";
+    /** Marker read by the system prompt (rule 1) to decide whether to call getIntervention. */
+    static final String INTERVENTION_PREFIX = "Current intervention: ";
 
     private static final Pattern INTERVENTION_ID = Pattern.compile("INT-\\d{4}-\\d{4}");
     private static final Logger log = LoggerFactory.getLogger(TechnicianAgent.class);
@@ -70,11 +62,9 @@ public class TechnicianAgent {
     private final ChatMemory chatMemory;
     private final InterventionTools interventionTools;
     private final GroundingGuard guard;
-    private final boolean guardEnabled;
 
     public TechnicianAgent(ChatClient.Builder builder, ChatMemory chatMemory,
-            TechnicalDocumentationTools documentationTools, InterventionTools interventionTools,
-            GroundingGuard guard, @Value("${techagent.grounding-check:true}") boolean groundingCheck,
+            TechnicalDocumentationTools documentationTools, InterventionTools interventionTools, GroundingGuard guard,
             @Value("classpath:prompts/agent-system-prompt.md") Resource systemPrompt) {
         this.chatClient = builder
                 .defaultSystem(read(systemPrompt))
@@ -83,208 +73,103 @@ public class TechnicianAgent {
         this.chatMemory = chatMemory;
         this.interventionTools = interventionTools;
         this.guard = guard;
-        this.guardEnabled = groundingCheck;
     }
 
-    /**
-     * @param request  question du technicien, numero d'intervention optionnel
-     * @param context  en-tetes AgentCore (identifiant de session pour la memoire)
-     */
     @AgentCoreInvocation
     public AgentResponse invoke(AgentRequest request, AgentCoreContext context) {
         long start = System.currentTimeMillis();
-        if (!isValid(request)) {
-            log.info("agent_invocation status=INVALID_REQUEST");
-            return new AgentResponse(INVALID_MESSAGE, Status.INVALID_REQUEST, List.of(), List.of(),
-                    new AgentResponse.Usage(0, 0, 0, System.currentTimeMillis() - start), null);
-        }
 
-        // L'intervention est resolue ici, par l'application, et non par le modele de langage.
+        // 1. Validation, and the application loads the intervention.
         InterventionTools.Intervention intervention = null;
-        if (request.interventionId() != null && !request.interventionId().isBlank()) {
-            intervention = interventionTools.find(request.interventionId()).orElse(null);
+        if (request != null && hasText(request.interventionId())) {
+            String id = request.interventionId().strip().toUpperCase();
+            intervention = INTERVENTION_ID.matcher(id).matches() ? interventionTools.find(id).orElse(null) : null;
             if (intervention == null) {
-                log.info("agent_invocation status=INVALID_REQUEST reason=unknown_intervention");
-                return new AgentResponse(UNKNOWN_INTERVENTION_MESSAGE, Status.INVALID_REQUEST, List.of(), List.of(),
-                        new AgentResponse.Usage(0, 0, 0, System.currentTimeMillis() - start), null);
+                return done(AgentResponse.of(INVALID_MESSAGE, Status.INVALID_REQUEST, start));
             }
         }
-
-        String sessionId = conversationId(sessionId(context), intervention);
+        if (request == null || !hasText(request.prompt()) || request.prompt().strip().length() > GroundingGuard.MAX_QUERY_CHARS) {
+            return done(AgentResponse.of(INVALID_MESSAGE, Status.INVALID_REQUEST, start));
+        }
         String question = request.prompt().strip();
-        String userMessage = userMessage(request);
-        List<Message> firstTurn = new ArrayList<>(chatMemory.get(sessionId));
-        firstTurn.add(new UserMessage(userMessage));
+        String userMessage = intervention == null ? question : INTERVENTION_PREFIX + intervention.id() + "\n" + question;
 
-        ToolTrace trace = newTrace(intervention);
-        List<String> toolCalls = new ArrayList<>();
-        List<String> documents = new ArrayList<>();
-        int guardrailUnits = 0;
-        int[] tokens = {0, 0};
-        boolean retried = false;
-        Outcome outcome;
+        // 2. Agent loop: Spring AI calls the tools requested by the model, then returns the answer.
+        String conversationId = conversationId(sessionId(context), intervention);
+        List<Message> messages = new ArrayList<>(chatMemory.get(conversationId));
+        messages.add(new UserMessage(userMessage));
+        ToolTrace trace = new ToolTrace(intervention);
+        ChatResponse response;
+        GroundingGuard.Verdict verdict;
         try {
-            ChatResponse response = call(firstTurn, trace);
-            String firstAnswer = text(response);
-            outcome = evaluate(trace, question, firstAnswer);
-            collect(trace, toolCalls, documents);
-            guardrailUnits = outcome.verdict().textUnits();
-            tokens = tokens(response);
+            response = chatClient.prompt()
+                    .messages(messages)
+                    .toolContext(Map.of(ToolTrace.KEY, trace))
+                    .call()
+                    .chatResponse();
+            String text = response.getResult().getOutput().getText();
 
-            // Reponse non fondee (typiquement : le modele a repondu de memoire sans consulter la
-            // documentation) : une seule relance, avec une consigne explicite et une trace neuve,
-            // pour que seule une nouvelle recherche puisse fonder la nouvelle reponse. Ce tour de
-            // relance n'est pas memorise.
-            if (outcome.retriable()) {
-                retried = true;
-                List<Message> retryTurn = new ArrayList<>(firstTurn);
-                retryTurn.add(new AssistantMessage(firstAnswer == null ? "" : firstAnswer));
-                retryTurn.add(new UserMessage(RETRY_INSTRUCTION));
-                ToolTrace retryTrace = trace.forRetry();
-                ChatResponse retry = call(retryTurn, retryTrace);
-                outcome = evaluate(retryTrace, question, text(retry));
-                collect(retryTrace, toolCalls, documents);
-                guardrailUnits += outcome.verdict().textUnits();
-                int[] retryTokens = tokens(retry);
-                tokens = new int[] {tokens[0] + retryTokens[0], tokens[1] + retryTokens[1]};
+            // 3. Grounding check: without a documentation excerpt nothing grounds a technical
+            // answer (intervention and stock give context, not the answer).
+            verdict = trace.documents().isEmpty()
+                    ? GroundingGuard.Verdict.NOT_EVALUATED
+                    : guard.check(trace.groundingSource(), question, text);
+            if (!verdict.blocked()) {
+                return remember(conversationId, userMessage,
+                        new AgentResponse(text, Status.ANSWERED, trace, usage(response, verdict, trace, start), verdict));
             }
         }
         catch (RuntimeException e) {
-            // Converse en throttling ou timeout, echec d'outil remonte par Spring AI... Reponse
-            // deterministe, seul le type d'erreur est journalise, rien n'est memorise.
-            long latency = System.currentTimeMillis() - start;
-            log.warn("agent_invocation status=UNAVAILABLE error={} latencyMs={}", e.getClass().getSimpleName(), latency);
-            return new AgentResponse(UNAVAILABLE_MESSAGE, Status.UNAVAILABLE, List.copyOf(toolCalls), List.copyOf(documents),
-                    new AgentResponse.Usage(tokens[0], tokens[1], guardrailUnits, latency), null);
+            // AWS error (throttling, timeout...): neutral message, only the error type is logged.
+            log.warn("agent_invocation_failed error={}", e.getClass().getSimpleName());
+            return done(new AgentResponse(ERROR_MESSAGE, Status.ERROR, trace, AgentResponse.Usage.none(start), null));
         }
-
-        // Seul ce qui a ete montre au technicien entre dans l'historique de la session, et pas
-        // les pannes AWS (la question pourra etre reposee telle quelle).
-        if (outcome.status() != Status.UNAVAILABLE) {
-            chatMemory.add(sessionId, List.of(new UserMessage(userMessage), new AssistantMessage(outcome.answer())));
-        }
-
-        long latency = System.currentTimeMillis() - start;
-        GroundingGuard.Verdict verdict = outcome.verdict();
-        log.info("agent_invocation status={} retried={} toolCalls={} documents={} inputTokens={} "
-                        + "outputTokens={} groundingScore={} relevanceScore={} guardrailUnits={} latencyMs={}",
-                outcome.status(), retried, toolCalls.size(), documents.size(), tokens[0], tokens[1],
-                verdict.grounding(), verdict.relevance(), guardrailUnits, latency);
-
-        // Pas de bloc d'ancrage quand l'evaluation n'a pas pu avoir lieu (panne AWS).
-        AgentResponse.Grounding grounding = guardEnabled && outcome.status() != Status.UNAVAILABLE
-                ? new AgentResponse.Grounding(verdict.grounding(), verdict.relevance(),
-                        outcome.status() == Status.BLOCKED, retried)
-                : null;
-        return new AgentResponse(outcome.answer(), outcome.status(), List.copyOf(toolCalls), List.copyOf(documents),
-                new AgentResponse.Usage(tokens[0], tokens[1], guardrailUnits, latency), grounding);
+        return remember(conversationId, userMessage,
+                new AgentResponse(BLOCKED_MESSAGE, Status.BLOCKED, trace, usage(response, verdict, trace, start), verdict));
     }
 
-    private static ToolTrace newTrace(InterventionTools.Intervention intervention) {
-        return intervention == null ? new ToolTrace() : ToolTrace.forIntervention(intervention);
-    }
-
-    private static void collect(ToolTrace trace, List<String> toolCalls, List<String> documents) {
-        toolCalls.addAll(trace.toolCalls());
-        trace.documents().stream().filter(d -> !documents.contains(d)).forEach(documents::add);
-    }
-
-    /** Decide ce qui est montre au technicien pour une reponse candidate. */
-    private Outcome evaluate(ToolTrace trace, String question, String answer) {
-        // Panne AWS pendant un outil (Retrieve...) : ni relance ni message sur la saisie.
-        if (trace.isUnavailable()) {
-            return Outcome.unavailable();
-        }
-        if (answer == null || answer.isBlank()) {
-            return Outcome.blocked(GroundingGuard.Verdict.NOT_EVALUATED, true);
-        }
-        // Les regles documentaires valent aussi quand le garde-fou est desactive : seul l'appel
-        // ApplyGuardrail est saute par GROUNDING_CHECK=false.
-        // Refus exact : accepte seulement si une recherche documentaire a vraiment eu lieu.
-        if (answer.strip().equals(NOT_FOUND_MESSAGE)) {
-            return trace.wasDocumentationSearched()
-                    ? new Outcome(NOT_FOUND_MESSAGE, Status.NOT_FOUND, GroundingGuard.Verdict.DISABLED, false)
-                    : Outcome.blocked(GroundingGuard.Verdict.NOT_EVALUATED, true);
-        }
-        // Recherche documentaire faite, aucun extrait : refus deterministe, meme si l'intervention
-        // ou le stock ont renvoye du contenu (ils ne remplacent pas la documentation).
-        if (trace.wasDocumentationSearched() && trace.documents().isEmpty()) {
-            return new Outcome(NOT_FOUND_MESSAGE, Status.NOT_FOUND, GroundingGuard.Verdict.DISABLED, false);
-        }
-        // Aucun extrait de documentation : rien ne fonde une reponse technique. L'intervention et
-        // le stock donnent du contexte, pas la reponse. Relance avec consigne de chercher.
-        if (trace.documents().isEmpty() || trace.groundingSource().isBlank()) {
-            return Outcome.blocked(GroundingGuard.Verdict.NOT_EVALUATED, true);
-        }
-        if (!guardEnabled) {
-            return new Outcome(answer, Status.ANSWERED, GroundingGuard.Verdict.DISABLED, false);
-        }
-
-        GroundingGuard.Verdict verdict;
-        try {
-            // Query = la question seule : limite de 1 000 caracteres, et le controle d'ancrage
-            // n'est pas concu pour un historique conversationnel.
-            verdict = guard.check(trace.groundingSource(), question, answer);
-        }
-        catch (SdkException e) {
-            // Fail-closed : la reponse n'est pas montree. Statut UNAVAILABLE (panne AWS), pas BLOCKED.
-            log.warn("grounding_check_failed error={}", e.getClass().getSimpleName());
-            return Outcome.unavailable();
-        }
-        return verdict.blocked()
-                ? Outcome.blocked(verdict, true)
-                : new Outcome(answer, Status.ANSWERED, verdict, false);
-    }
-
-    private ChatResponse call(List<Message> messages, ToolTrace trace) {
-        return chatClient.prompt()
-                .messages(messages)
-                .toolContext(Map.of(ToolTrace.KEY, trace))
-                .call()
-                .chatResponse();
-    }
-
-    private static String text(ChatResponse response) {
-        return response != null && response.getResult() != null && response.getResult().getOutput() != null
-                ? response.getResult().getOutput().getText()
-                : null;
-    }
-
-    private static int[] tokens(ChatResponse response) {
-        Usage usage = response != null && response.getMetadata() != null ? response.getMetadata().getUsage() : null;
-        int in = usage != null && usage.getPromptTokens() != null ? usage.getPromptTokens() : 0;
-        int out = usage != null && usage.getCompletionTokens() != null ? usage.getCompletionTokens() : 0;
-        return new int[] {in, out};
-    }
-
-    static boolean isValid(AgentRequest request) {
-        if (request == null || request.prompt() == null || request.prompt().isBlank()
-                || request.prompt().strip().length() > GroundingGuard.MAX_QUERY_CHARS) {
-            return false;
-        }
-        String id = request.interventionId();
-        return id == null || id.isBlank() || INTERVENTION_ID.matcher(id.strip().toUpperCase()).matches();
-    }
-
-    static String userMessage(AgentRequest request) {
-        if (request.interventionId() == null || request.interventionId().isBlank()) {
-            return request.prompt().strip();
-        }
-        return "Intervention : " + request.interventionId().strip().toUpperCase() + "\n" + request.prompt().strip();
+    /** Only the question and the answer actually shown go into the history. */
+    private AgentResponse remember(String conversationId, String userMessage, AgentResponse response) {
+        chatMemory.add(conversationId, List.of(new UserMessage(userMessage), new AssistantMessage(response.answer())));
+        return done(response);
     }
 
     /**
-     * Historique propre a la session ET a l'intervention : reutiliser une session pour une autre
-     * intervention (ou sans intervention) repart d'un historique vide, sans melanger deux dossiers.
+     * History specific to the session AND the intervention: reusing a session for another
+     * intervention starts from an empty history, without mixing two work orders.
      */
     static String conversationId(String sessionId, InterventionTools.Intervention intervention) {
-        return sessionId + "|" + (intervention == null ? "sans-intervention" : intervention.id());
+        return sessionId + "|" + (intervention == null ? "no-intervention" : intervention.id());
     }
 
-    /** Sans en-tete de session, chaque appel a sa propre session : aucun historique partage. */
+    /** Without a session header, each call has its own session: no shared history. */
     private static String sessionId(AgentCoreContext context) {
-        String id = context != null ? context.getHeader(AgentCoreHeaders.SESSION_ID) : null;
-        return id == null || id.isBlank() ? "ephemeral-" + UUID.randomUUID() : id;
+        String id = context == null ? null : context.getHeader(AgentCoreHeaders.SESSION_ID);
+        return hasText(id) ? id : "ephemeral-" + UUID.randomUUID();
+    }
+
+    /** Consumption accumulated over the whole agent loop: basis of the cost per question. */
+    private static AgentResponse.Usage usage(ChatResponse response, GroundingGuard.Verdict verdict, ToolTrace trace,
+            long start) {
+        Usage usage = response.getMetadata().getUsage();
+        int in = usage != null && usage.getPromptTokens() != null ? usage.getPromptTokens() : 0;
+        int out = usage != null && usage.getCompletionTokens() != null ? usage.getCompletionTokens() : 0;
+        long retrieves = trace.toolCalls().stream().filter(c -> c.startsWith("searchTechnicalDocumentation")).count();
+        return new AgentResponse.Usage(in, out, verdict.textUnits(), (int) retrieves, System.currentTimeMillis() - start);
+    }
+
+    /** One log line per question: status, tools, consumption, scores (never the technician's text). */
+    private static AgentResponse done(AgentResponse r) {
+        log.info("agent_invocation status={} toolCalls={} inputTokens={} outputTokens={} guardrailUnits={} "
+                        + "retrieveCalls={} groundingScore={} latencyMs={}",
+                r.status(), r.toolCalls().size(), r.usage().inputTokens(), r.usage().outputTokens(),
+                r.usage().guardrailUnits(), r.usage().retrieveCalls(),
+                r.grounding() == null ? null : r.grounding().groundingScore(), r.usage().latencyMs());
+        return r;
+    }
+
+    private static boolean hasText(String s) {
+        return s != null && !s.isBlank();
     }
 
     private static String read(Resource resource) {
@@ -292,39 +177,41 @@ public class TechnicianAgent {
             return resource.getContentAsString(StandardCharsets.UTF_8);
         }
         catch (IOException e) {
-            throw new UncheckedIOException("System prompt introuvable", e);
+            throw new UncheckedIOException("System prompt not found", e);
         }
     }
 
-    private record Outcome(String answer, Status status, GroundingGuard.Verdict verdict, boolean retriable) {
-
-        static Outcome blocked(GroundingGuard.Verdict verdict, boolean retriable) {
-            return new Outcome(BLOCKED_MESSAGE, Status.BLOCKED, verdict, retriable);
-        }
-
-        static Outcome unavailable() {
-            return new Outcome(UNAVAILABLE_MESSAGE, Status.UNAVAILABLE, GroundingGuard.Verdict.NOT_EVALUATED, false);
-        }
-    }
-
-    public enum Status { ANSWERED, NOT_FOUND, BLOCKED, INVALID_REQUEST, UNAVAILABLE }
+    public enum Status { ANSWERED, BLOCKED, INVALID_REQUEST, ERROR }
 
     public record AgentRequest(String prompt, String interventionId) { }
 
     /**
-     * @param answer     reponse montree au technicien
-     * @param status     ANSWERED, NOT_FOUND, BLOCKED (garde-fou), INVALID_REQUEST ou UNAVAILABLE (erreur AWS)
-     * @param toolCalls  outils appeles, dans l'ordre (utile en demo et pour le debug)
-     * @param documents  documents consultes
-     * @param usage      consommation cumulee sur toute la boucle agent
-     * @param grounding  resultat du controle d'ancrage (null si desactive)
+     * @param answer     answer shown to the technician
+     * @param status     ANSWERED, BLOCKED (grounding check), INVALID_REQUEST or ERROR (AWS error)
+     * @param toolCalls  tools called, in order (shown during the demo)
+     * @param documents  documents read
+     * @param usage      consumption of the question, for the cost calculation
+     * @param grounding  grounding check scores (null if it did not run)
      */
     public record AgentResponse(String answer, Status status, List<String> toolCalls, List<String> documents,
             Usage usage, Grounding grounding) {
 
-        public record Usage(int inputTokens, int outputTokens, int guardrailUnits, long latencyMs) { }
+        AgentResponse(String answer, Status status, ToolTrace trace, Usage usage, GroundingGuard.Verdict verdict) {
+            this(answer, status, trace.toolCalls(), trace.documents(), usage,
+                    verdict == null || verdict.grounding() == null ? null
+                            : new Grounding(verdict.grounding(), verdict.relevance()));
+        }
 
-        /** @param retried vrai si une premiere reponse non fondee a ete rejetee puis regeneree */
-        public record Grounding(Double groundingScore, Double relevanceScore, boolean blocked, boolean retried) { }
+        static AgentResponse of(String answer, Status status, long start) {
+            return new AgentResponse(answer, status, List.of(), List.of(), Usage.none(start), null);
+        }
+
+        public record Usage(int inputTokens, int outputTokens, int guardrailUnits, int retrieveCalls, long latencyMs) {
+            static Usage none(long start) {
+                return new Usage(0, 0, 0, 0, System.currentTimeMillis() - start);
+            }
+        }
+
+        public record Grounding(Double groundingScore, Double relevanceScore) { }
     }
 }

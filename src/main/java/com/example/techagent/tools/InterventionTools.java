@@ -9,19 +9,19 @@ import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 
 /**
- * Outils metier SIMULES (donnees en dur). Ils representent les systemes qui existent deja
- * cote SI : ordres de travail, historique des pannes, stock de pieces. En production, chaque
- * methode appelle l'API du systeme reel, ou devient une cible AgentCore Gateway sans toucher
- * au code de l'agent.
+ * SIMULATED business tools (hard-coded data, in French like the real systems). They stand for the
+ * systems that already exist: work orders, fault history, spare part stock. In production, each
+ * method calls the real system API, or becomes an AgentCore Gateway target without touching the
+ * agent code.
  */
 @Component
 public class InterventionTools {
 
-    public record Intervention(String id, String site, String fabricant, String modele, int anneeInstallation,
-            String symptomeSignale, List<String> historiquePannes, String dernierEntretien) { }
+    public record Intervention(String id, String site, String manufacturer, String model, int installationYear,
+            String reportedSymptom, List<String> faultHistory, String lastService) { }
 
-    /** quantiteDepot et depot sont null quand la reference n'est pas suivie : inconnu n'est pas zero. */
-    public record StockPiece(String reference, String designation, Integer quantiteDepot, String depot) { }
+    /** depotQuantity and depot are null when the reference is not tracked: unknown is not zero. */
+    public record SparePartStock(String reference, String description, Integer depotQuantity, String depot) { }
 
     private static final Map<String, Intervention> INTERVENTIONS = Map.of(
             "INT-2026-0412", new Intervention("INT-2026-0412", "Résidence Les Tilleuls, Lyon 3e, logement 12",
@@ -36,60 +36,54 @@ public class InterventionTools {
                     "Aerotherm", "Hydra 12", 2023, "Code E9 répété le matin",
                     List.of(), "2025-11-18"));
 
-    private static final Map<String, StockPiece> STOCK = Map.of(
-            "TH-PR-4018", new StockPiece("TH-PR-4018", "Vase d'expansion 8 litres Condensa 24", 3, "Dépôt Lyon Sud"),
-            "TH-PR-1142", new StockPiece("TH-PR-1142", "Électrode allumage et ionisation Condensa 24", 0, "Dépôt Lyon Sud"),
-            "VP-SP-0620", new StockPiece("VP-SP-0620", "Vanne gaz Ecoline 35", 1, "Dépôt Lyon Nord"),
-            "VP-SP-0450", new StockPiece("VP-SP-0450", "Capteur de pression d'eau Ecoline 35", 4, "Dépôt Lyon Nord"));
+    private static final Map<String, SparePartStock> STOCK = Map.of(
+            "TH-PR-4018", new SparePartStock("TH-PR-4018", "Vase d'expansion 8 litres Condensa 24", 3, "Dépôt Lyon Sud"),
+            "TH-PR-1142", new SparePartStock("TH-PR-1142", "Électrode allumage et ionisation Condensa 24", 0, "Dépôt Lyon Sud"),
+            "VP-SP-0620", new SparePartStock("VP-SP-0620", "Vanne gaz Ecoline 35", 1, "Dépôt Lyon Nord"),
+            "VP-SP-0450", new SparePartStock("VP-SP-0450", "Capteur de pression d'eau Ecoline 35", 4, "Dépôt Lyon Nord"));
+
+    // The reference typed by the model is never echoed back: an invented text must not become a
+    // "grounded" source for the grounding check.
+    static final SparePartStock UNKNOWN_PART = new SparePartStock(null,
+            "Référence non suivie en stock : disponibilité inconnue (ce n'est pas une rupture).", null, null);
 
     @Tool(description = """
-            Renvoie le contexte d'un ordre d'intervention : site, fabricant et modele exact de
-            l'equipement, symptome signale, historique des pannes et date du dernier entretien.
-            A appeler en premier des qu'un numero d'intervention (format INT-AAAA-NNNN) est connu.""")
-    public Intervention getIntervention(
-            @ToolParam(description = "Numero d'intervention, par exemple INT-2026-0412") String interventionId,
-            ToolContext toolContext) {
+            Returns the current work order: site, manufacturer and exact equipment model,
+            reported symptom, fault history, last service.
+            Call it first when an intervention is in progress.""")
+    public Intervention getIntervention(ToolContext toolContext) {
+        // No parameter: the intervention is the one of the request, loaded by the application.
+        // The language model does not choose which work order it reads (in production, this is
+        // also where the technician's access control applies).
         ToolTrace trace = ToolTrace.from(toolContext);
-        trace.requireCall("getIntervention(" + interventionId + ")");
-        // Seule l'intervention de la requete, resolue par l'application avant la boucle, est
-        // consultable : le modele de langage ne choisit pas l'ordre de travail qu'il lit. En
-        // production, c'est aussi la ou s'applique le controle d'acces du technicien.
-        String trusted = trace.trustedInterventionId();
-        if (trusted == null || !trusted.equals(normalize(interventionId))) {
-            throw new IllegalArgumentException("Seule l'intervention en cours peut etre consultee");
+        trace.call("getIntervention", "getIntervention()");
+        Intervention intervention = trace.intervention();
+        if (intervention == null) {
+            throw new IllegalStateException("No intervention in progress for this question");
         }
-        Intervention intervention = INTERVENTIONS.get(trusted);
-        // Le contenu entre dans la source du controle d'ancrage seulement maintenant, quand le
-        // modele l'a effectivement recu : il ne peut pas etre "fonde" sur ce qu'il n'a pas lu.
-        trace.groundingSource("Intervention " + intervention);
+        trace.source("Intervention " + intervention);
         return intervention;
     }
 
-    /** Resolution par l'application (pas par le modele de langage) du numero recu dans la requete. */
+    /** Loads, on behalf of the application, the intervention number received in the request. */
     public Optional<Intervention> find(String interventionId) {
         return Optional.ofNullable(INTERVENTIONS.get(normalize(interventionId)));
     }
 
-    private static String normalize(String id) {
-        return id == null ? "" : id.strip().toUpperCase();
+    @Tool(description = """
+            Checks the availability of a spare part at the depot from its manufacturer
+            reference (references found in the technical documentation).""")
+    public SparePartStock checkSparePartStock(
+            @ToolParam(description = "Manufacturer part reference, for example TH-PR-4018") String reference,
+            ToolContext toolContext) {
+        ToolTrace trace = ToolTrace.from(toolContext);
+        trace.call("checkSparePartStock", "checkSparePartStock(" + reference + ")");
+        SparePartStock part = STOCK.getOrDefault(normalize(reference), UNKNOWN_PART);
+        trace.source("Stock " + part);
+        return part;
     }
 
-    @Tool(description = """
-            Verifie la disponibilite d'une piece de rechange au depot a partir de sa reference
-            fabricant (references trouvees dans la documentation technique).""")
-    public StockPiece checkSparePartStock(
-            @ToolParam(description = "Reference fabricant de la piece, par exemple TH-PR-4018") String reference,
-            ToolContext toolContext) {
-        ToolTrace.from(toolContext).requireCall("checkSparePartStock(" + reference + ")");
-        StockPiece piece = STOCK.get(normalize(reference));
-        if (piece == null) {
-            // Ne jamais renvoyer l'argument du modele comme donnee de reference : sinon un texte
-            // invente par le modele deviendrait une source "fondee" pour le controle d'ancrage.
-            String status = "Référence non suivie en stock : disponibilité inconnue (ce n'est pas une rupture).";
-            ToolTrace.from(toolContext).groundingSource("Stock : " + status);
-            return new StockPiece(null, status, null, null);
-        }
-        ToolTrace.from(toolContext).groundingSource("Stock " + piece);
-        return piece;
+    private static String normalize(String id) {
+        return id == null ? "" : id.strip().toUpperCase();
     }
 }

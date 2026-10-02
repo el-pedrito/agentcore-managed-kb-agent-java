@@ -18,20 +18,20 @@ import software.amazon.awssdk.services.bedrockagentruntime.model.RetrievalFilter
 import software.amazon.awssdk.services.bedrockagentruntime.model.RetrieveRequest;
 
 /**
- * {@link VectorStore} Spring AI au-dessus d'une Knowledge Base Bedrock <b>managee</b>.
+ * Spring AI {@link VectorStore} on top of a <b>managed</b> Bedrock Knowledge Base.
  *
- * <p>Pourquoi cette classe : le vector store Bedrock Knowledge Base fourni par Spring AI 2.0.1
- * envoie toujours un {@code vectorSearchConfiguration}, que refuse une Knowledge Base managee.
- * On garde donc l'abstraction Spring AI ({@code VectorStore}, {@code SearchRequest}, expressions
- * de filtre portables) et on appelle {@code Retrieve} avec {@code managedSearchConfiguration} via
- * le SDK AWS. C'est le meme contournement que le spike Dak Tech, rendu reutilisable et teste.
+ * <p>Why this class: the Bedrock Knowledge Base vector store shipped with Spring AI 2.0.1 always
+ * sends a {@code vectorSearchConfiguration}, which a managed Knowledge Base rejects. So we keep the
+ * Spring AI abstraction ({@code VectorStore}, {@code SearchRequest}, portable filter expressions)
+ * and call {@code Retrieve} with {@code managedSearchConfiguration} through the AWS SDK, in a
+ * reusable and tested class.
  *
- * <p>Lecture seule : l'alimentation de la Knowledge Base passe par la synchronisation de sa source
- * de donnees (S3), pas par {@link #add(List)}.
+ * <p>Read-only: the Knowledge Base is fed by syncing its data source (S3), not through
+ * {@link #add(List)}.
  */
 public class ManagedKnowledgeBaseVectorStore implements VectorStore {
 
-    /** Cle de metadonnee qui porte l'URI du document source dans les {@link Document} renvoyes. */
+    /** Metadata key that carries the source document URI in the returned {@link Document}s. */
     public static final String SOURCE_URI = "source_uri";
 
     private final BedrockAgentRuntimeClient client;
@@ -66,8 +66,8 @@ public class ManagedKnowledgeBaseVectorStore implements VectorStore {
     }
 
     /**
-     * Traduit une expression de filtre Spring AI en filtre Knowledge Base.
-     * Operateurs supportes : {@code ==}, {@code !=}, {@code in}, {@code &&}, {@code ||}.
+     * Translates a Spring AI filter expression into a Knowledge Base filter.
+     * Supported operators (the ones the demo needs): {@code ==}, {@code &&}, {@code ||}.
      */
     static RetrievalFilter toRetrievalFilter(Filter.Expression expression) {
         return switch (expression.type()) {
@@ -78,10 +78,8 @@ public class ManagedKnowledgeBaseVectorStore implements VectorStore {
                     toRetrievalFilter(asExpression(expression.left())),
                     toRetrievalFilter(asExpression(expression.right()))));
             case EQ -> RetrievalFilter.fromEqualsValue(attribute(expression));
-            case NE -> RetrievalFilter.fromNotEquals(attribute(expression));
-            case IN -> RetrievalFilter.fromIn(attribute(expression));
             default -> throw new IllegalArgumentException(
-                    "Operateur de filtre non supporte par la Knowledge Base managee : " + expression.type());
+                    "Filter operator not supported by the managed Knowledge Base: " + expression.type());
         };
     }
 
@@ -92,27 +90,14 @@ public class ManagedKnowledgeBaseVectorStore implements VectorStore {
         if (operand instanceof Filter.Group g) {
             return g.content();
         }
-        throw new IllegalArgumentException("Operande de filtre inattendue : " + operand);
+        throw new IllegalArgumentException("Unexpected filter operand: " + operand);
     }
 
     private static FilterAttribute attribute(Filter.Expression expression) {
         String key = ((Filter.Key) expression.left()).key();
-        Object value = ((Filter.Value) expression.right()).value();
-        return FilterAttribute.builder().key(key).value(toSdkDocument(value)).build();
-    }
-
-    private static software.amazon.awssdk.core.document.Document toSdkDocument(Object value) {
-        if (value instanceof List<?> list) {
-            return software.amazon.awssdk.core.document.Document.fromList(
-                    list.stream().map(ManagedKnowledgeBaseVectorStore::toSdkDocument).toList());
-        }
-        if (value instanceof Number n) {
-            return software.amazon.awssdk.core.document.Document.fromNumber(n.toString());
-        }
-        if (value instanceof Boolean b) {
-            return software.amazon.awssdk.core.document.Document.fromBoolean(b);
-        }
-        return software.amazon.awssdk.core.document.Document.fromString(String.valueOf(value));
+        String value = String.valueOf(((Filter.Value) expression.right()).value());
+        return FilterAttribute.builder().key(key)
+                .value(software.amazon.awssdk.core.document.Document.fromString(value)).build();
     }
 
     private static Document toDocument(KnowledgeBaseRetrievalResult r) {
@@ -137,17 +122,17 @@ public class ManagedKnowledgeBaseVectorStore implements VectorStore {
     @Override
     public void add(List<Document> documents) {
         throw new UnsupportedOperationException(
-                "Knowledge Base managee : alimenter la source de donnees S3 puis lancer une synchronisation");
+                "Managed Knowledge Base: upload to the S3 data source, then start a sync");
     }
 
     @Override
     public void delete(List<String> idList) {
-        throw new UnsupportedOperationException("Suppression via la source de donnees S3 uniquement");
+        throw new UnsupportedOperationException("Deletion through the S3 data source only");
     }
 
     @Override
     public void delete(Filter.Expression filterExpression) {
-        throw new UnsupportedOperationException("Suppression via la source de donnees S3 uniquement");
+        throw new UnsupportedOperationException("Deletion through the S3 data source only");
     }
 
     @Override

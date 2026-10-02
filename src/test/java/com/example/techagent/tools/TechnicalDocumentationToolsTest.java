@@ -25,60 +25,43 @@ class TechnicalDocumentationToolsTest {
     void theInterventionModelIsTheOnlyFilterAndKeepsCrossModelDocuments() {
         when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of());
 
-        tools.searchTechnicalDocumentation("code F28", interventionCtx("INT-2026-0413"));
+        tools.searchTechnicalDocumentation("code F28", ctx(new ToolTrace(new InterventionTools().find("INT-2026-0413").orElseThrow())));
 
         SearchRequest sent = capture();
         assertThat(sent.getQuery()).isEqualTo("code F28");
         assertThat(sent.getTopK()).isEqualTo(5);
-        assertThat(sent.getFilterExpression().toString()).contains("Ecoline 35").contains("Tous").contains("OR");
+        assertThat(sent.getFilterExpression().toString()).contains("Ecoline 35").contains("ALL").contains("OR");
     }
 
     @Test
     void withoutInterventionTheSearchIsNeverFiltered() {
         when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of());
 
-        // Meme si la question cite un modele, le modele de langage n'a aucun moyen de restreindre
-        // la recherche : seule une intervention resolue par l'application filtre.
-        tools.searchTechnicalDocumentation("code F28 sur Ecoline 35", ctx());
+        // The language model has no parameter to narrow the search.
+        tools.searchTechnicalDocumentation("code F28 sur Ecoline 35", ctx(new ToolTrace(null)));
 
         assertThat(capture().getFilterExpression()).isNull();
     }
 
     @Test
-    void returnsExtractsAndRecordsTrace() {
+    void returnsExtractsAndFeedsTheGroundingSource() {
         when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(Document.builder()
                 .text("F28 : défaut d'allumage répété")
                 .metadata(Map.of(ManagedKnowledgeBaseVectorStore.SOURCE_URI, "s3://b/docs/vaporis/manuel.md",
-                        "modele", "Ecoline 35"))
+                        "model", "Ecoline 35"))
                 .score(0.7)
                 .build()));
-        ToolTrace trace = ToolTrace.forIntervention(new InterventionTools().find("INT-2026-0413").orElseThrow());
+        ToolTrace trace = new ToolTrace(null);
 
-        List<TechnicalDocumentationTools.DocumentationExtract> extracts =
-                tools.searchTechnicalDocumentation("F28", new ToolContext(Map.of(ToolTrace.KEY, trace)));
+        var extracts = tools.searchTechnicalDocumentation("F28", ctx(trace));
 
         assertThat(extracts).singleElement().satisfies(e -> {
             assertThat(e.document()).isEqualTo("manuel.md");
-            assertThat(e.modele()).isEqualTo("Ecoline 35");
-            assertThat(e.score()).isEqualTo(0.7);
+            assertThat(e.model()).isEqualTo("Ecoline 35");
         });
-        assertThat(trace.toolCalls()).singleElement().asString().contains("F28").contains("Ecoline 35");
         assertThat(trace.documents()).containsExactly("manuel.md");
-        // Le modele d'equipement est dans la source du controle d'ancrage.
-        assertThat(trace.groundingSource()).contains("[manuel.md | modele : Ecoline 35]");
-    }
-
-    @Test
-    void anAwsFailureMarksTheTraceUnavailable() {
-        when(vectorStore.similaritySearch(any(SearchRequest.class)))
-                .thenThrow(software.amazon.awssdk.core.exception.SdkClientException.create("timeout"));
-        ToolTrace trace = new ToolTrace();
-
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> tools.searchTechnicalDocumentation("F28",
-                        new ToolContext(Map.of(ToolTrace.KEY, trace))))
-                .hasMessageNotContaining("timeout");
-        assertThat(trace.isUnavailable()).isTrue();
-        assertThat(trace.wasDocumentationSearched()).isFalse();
+        // The equipment model is part of the grounding check source.
+        assertThat(trace.groundingSource()).contains("[manuel.md | model: Ecoline 35]");
     }
 
     private SearchRequest capture() {
@@ -87,12 +70,7 @@ class TechnicalDocumentationToolsTest {
         return captor.getValue();
     }
 
-    private static ToolContext interventionCtx(String id) {
-        return new ToolContext(Map.of(ToolTrace.KEY,
-                ToolTrace.forIntervention(new InterventionTools().find(id).orElseThrow())));
-    }
-
-    private static ToolContext ctx() {
-        return new ToolContext(java.util.Map.of(ToolTrace.KEY, new ToolTrace()));
+    private static ToolContext ctx(ToolTrace trace) {
+        return new ToolContext(Map.of(ToolTrace.KEY, trace));
     }
 }

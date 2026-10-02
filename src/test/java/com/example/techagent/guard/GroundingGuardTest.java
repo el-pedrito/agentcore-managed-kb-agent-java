@@ -64,6 +64,38 @@ class GroundingGuardTest {
         assertThat(guard.check("doc", "question", "réponse").blocked()).isTrue();
     }
 
+    @Test
+    void blocksWhenTheServiceReturnsNoScores() {
+        when(client.applyGuardrail(any(ApplyGuardrailRequest.class))).thenReturn(ApplyGuardrailResponse.builder()
+                .action(GuardrailAction.NONE).build());
+
+        GroundingGuard.Verdict verdict = guard.check("doc", "question", "réponse");
+
+        assertThat(verdict.blocked()).isTrue();
+        assertThat(verdict.grounding()).isNull();
+    }
+
+    @Test
+    void blocksWhenOneScoreIsMissing() {
+        when(client.applyGuardrail(any(ApplyGuardrailRequest.class))).thenReturn(ApplyGuardrailResponse.builder()
+                .action(GuardrailAction.NONE)
+                .assessments(GuardrailAssessment.builder()
+                        .contextualGroundingPolicy(GuardrailContextualGroundingPolicyAssessment.builder()
+                                .filters(filter(GuardrailContextualGroundingFilterType.GROUNDING, 0.95)).build())
+                        .build())
+                .build());
+
+        assertThat(guard.check("doc", "question", "réponse").blocked()).isTrue();
+    }
+
+    @Test
+    void blocksWithoutCallingTheServiceWhenTheQueryIsTooLong() {
+        GroundingGuard.Verdict verdict = guard.check("doc", "q".repeat(GroundingGuard.MAX_QUERY_CHARS + 1), "réponse");
+
+        assertThat(verdict.blocked()).isTrue();
+        org.mockito.Mockito.verifyNoInteractions(client);
+    }
+
     private static ApplyGuardrailResponse response(GuardrailAction action) {
         return ApplyGuardrailResponse.builder()
                 .action(action)

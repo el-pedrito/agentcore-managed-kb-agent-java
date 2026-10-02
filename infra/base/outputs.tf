@@ -1,4 +1,4 @@
-# Outputs du socle, relus par scripts/deploy.sh pour alimenter infra/runtime.
+# Base outputs, read by scripts/deploy.sh to feed infra/runtime.
 
 output "region" {
   value = var.region
@@ -9,10 +9,10 @@ output "repository_url" {
 }
 
 output "agent_role_arn" {
-  description = "Role d'execution du runtime (variable role_arn de infra/runtime)."
-  # Expose une fois les permissions attachees : le runtime ne demarre pas avec un role vide.
+  description = "Runtime execution role (role_arn variable of infra/runtime)."
+  # Exposed once the permissions are attached: the runtime does not start with an empty role.
   value      = aws_iam_role.agent.arn
-  depends_on = [aws_iam_role_policy.agent, aws_iam_role_policy.agent_guardrail]
+  depends_on = [aws_iam_role_policy.agent]
 }
 
 output "knowledge_base_id" {
@@ -35,7 +35,3 @@ output "guardrail_version" {
   value = var.guardrail_version
 }
 
-output "grounding_check" {
-  description = "Controle d'ancrage actif sur le runtime."
-  value       = var.grounding_check
-}
