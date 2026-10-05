@@ -1,0 +1,38 @@
+# Unauthenticated endpoint locally: listens on 127.0.0.1 by default. On AgentCore Runtime,
+# SERVER_ADDRESS=0.0.0.0 (the Runtime authenticates calls with SigV4).
+server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
+
+spring:
+  application:
+    name: agentcore-managed-kb-agent
+  ai:
+    bedrock:
+      aws:
+        region: ${AWS_REGION:eu-west-1}
+        timeout: 60s
+      converse:
+        chat:
+          options:
+            # European inference profile: inference stays in AWS Regions in Europe.
+            model: ${MODEL_ID:eu.anthropic.claude-haiku-4-5-20251001-v1:0}
+            temperature: 0
+            max-tokens: 1000
+    # Native Spring AI safety net against an agent going in circles: a field question
+    # needs 2 to 4 tool calls.
+    tools:
+      limits:
+        max-total-tool-calls: 8
+
+techagent:
+  knowledge-base-id: ${KNOWLEDGE_BASE_ID}
+  max-results: ${MAX_RESULTS:5}
+  # Grounding guardrail of demo 1, mandatory: without GUARDRAIL_ID/VERSION the agent refuses to start.
+  guardrail-id: ${GUARDRAIL_ID:}
+  guardrail-version: ${GUARDRAIL_VERSION:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health

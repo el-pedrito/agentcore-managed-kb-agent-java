@@ -1,0 +1,5 @@
+target/*
+!target/agentcore-managed-kb-agent.jar
+.deploy/
+sample-docs/
+.git/
