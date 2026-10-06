@@ -169,3 +169,7 @@ Deletes the runtime, the ECR repository and the role. The Knowledge Base and the
 - [Contextual grounding check with ApplyGuardrail](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-contextual-grounding-check.html)
 - [Connect to your knowledge base through AgentCore Gateway](https://docs.aws.amazon.com/bedrock/latest/userguide/kb-gateway-target.html)
 - [Amazon Bedrock AgentCore pricing](https://aws.amazon.com/bedrock/agentcore/pricing/)
+
+## License
+
+This project is licensed under the MIT-0 License. See the [LICENSE](LICENSE) file.
